@@ -1,4 +1,4 @@
-#include <stdio.h>
+a#include <stdio.h>
 #include <queue>
 #include <map>
 #include <thread>
@@ -162,7 +162,7 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 }
 
 
-void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
+void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg) 
 {
     if (!init_feature)
     {
@@ -171,13 +171,14 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
         return;
     }
     m_buf.lock();
-    feature_buf.push(feature_msg);
+    feature_buf.push(feature_msg); // Create feature buffer
     m_buf.unlock();
     con.notify_one();
 }
 
 void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
 {
+    /* Restart 시, feature와 imu buffer 모두 pop */
     if (restart_msg->data == true)
     {
         ROS_WARN("restart the estimator!");
@@ -212,25 +213,26 @@ void process()
     {
         std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
         std::unique_lock<std::mutex> lk(m_buf);
+        // notify_one() 값을 처리하기 위해 기다리는 스레중 중 하나를 깨운다. --> lk는 wait으로 m_buf의 처리를 기다리는 중
         con.wait(lk, [&]
                  {
-            return (measurements = getMeasurements()).size() != 0;
+            return (measurements = getMeasurements()).size() != 0; // m_buf를 사용하는 다른 스레드에서 notify가 오고 measurements의 size가 0보다 클 때까지 기다린다. 
                  });
         lk.unlock();
-        m_estimator.lock();
+        m_estimator.lock(); // state estimates를 변경하기 때문에 lock을 한다.
         for (auto &measurement : measurements)
         {
-            auto img_msg = measurement.second;
+            auto img_msg = measurement.second; // feature points
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
             for (auto &imu_msg : measurement.first)
             {
                 double t = imu_msg->header.stamp.toSec();
-                double img_t = img_msg->header.stamp.toSec() + estimator.td;
-                if (t <= img_t)
+                double img_t = img_msg->header.stamp.toSec() + estimator.td; // image time + time offset 
+                if (t <= img_t) // image time이 imu time보다 최근
                 { 
-                    if (current_time < 0)
-                        current_time = t;
-                    double dt = t - current_time;
+                    if (current_time < 0) // first measurement
+                        current_time = t; // set the current time to imu time
+                    double dt = t - current_time; 
                     ROS_ASSERT(dt >= 0);
                     current_time = t;
                     dx = imu_msg->linear_acceleration.x;
@@ -239,21 +241,24 @@ void process()
                     rx = imu_msg->angular_velocity.x;
                     ry = imu_msg->angular_velocity.y;
                     rz = imu_msg->angular_velocity.z;
-                    estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
+                    estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz)); // 이전 imu time에서 현재 imu time까지 integrate
                     //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
 
                 }
-                else
+                else // imu time이 image time보다 최근
                 {
-                    double dt_1 = img_t - current_time;
-                    double dt_2 = t - img_t;
-                    current_time = img_t;
+                    double dt_1 = img_t - current_time; // 현재 img time - 이전 imu time
+                    double dt_2 = t - img_t; // 현재 imu time - 현재 img time
+                    current_time = img_t; // 현재 time을 Img time으로 설정
                     ROS_ASSERT(dt_1 >= 0);
                     ROS_ASSERT(dt_2 >= 0);
                     ROS_ASSERT(dt_1 + dt_2 > 0);
-                    double w1 = dt_2 / (dt_1 + dt_2);
+                    double w1 = dt_2 / (dt_1 + dt_2); 
                     double w2 = dt_1 / (dt_1 + dt_2);
-                    dx = w1 * dx + w2 * imu_msg->linear_acceleration.x;
+                    // 즉, [imu_prev, img_curr, imu_curr] 이런 식으로 데이터가 들어와야 함 
+                    // 그 사이의 time 비율로 w1, w2 정함; w1는 img_curr이 imu_curr에 가까울수록 작고, w2는 커진다.
+                    // 이전 imu에서의 raw measurement와 현재 raw measurements 값에 대해 linear interpolation한다. 
+                    dx = w1 * dx + w2 * imu_msg->linear_acceleration.x; 
                     dy = w1 * dy + w2 * imu_msg->linear_acceleration.y;
                     dz = w1 * dz + w2 * imu_msg->linear_acceleration.z;
                     rx = w1 * rx + w2 * imu_msg->angular_velocity.x;
@@ -264,12 +269,13 @@ void process()
                 }
             }
             // set relocalization frame
-            sensor_msgs::PointCloudConstPtr relo_msg = NULL;
+            sensor_msgs::PointCloudConstPtr relo_msg = NULL; // frame-by-frame 분석에 의해 변경된 3D points 위치 (?)
             while (!relo_buf.empty())
             {
                 relo_msg = relo_buf.front();
                 relo_buf.pop();
             }
+            // relo_msg에는 제일 최근 Relocation Points
             if (relo_msg != NULL)
             {
                 vector<Vector3d> match_points;
@@ -288,6 +294,7 @@ void process()
                 int frame_index;
                 frame_index = relo_msg->channels[0].values[7];
                 estimator.setReloFrame(frame_stamp, frame_index, match_points, relo_t, relo_r);
+                // 해당 relocated points가 관측된 camera pose 정보와 frame index 정보를 estimator에 넘긴다 (?) --> setReloFrame이 무엇을 하는 건지는 아직 모
             }
 
             ROS_DEBUG("processing vision data with stamp %f \n", img_msg->header.stamp.toSec());
