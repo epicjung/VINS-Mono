@@ -32,20 +32,20 @@ void Estimator::clearState()
         linear_acceleration_buf[i].clear();
         angular_velocity_buf[i].clear();
 
-        if (pre_integrations[i] != nullptr)
+        if (pre_integrations[i] != nullptr) // list of IntegrationBase objects as a pointer
             delete pre_integrations[i];
         pre_integrations[i] = nullptr;
     }
 
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
-        tic[i] = Vector3d::Zero();
-        ric[i] = Matrix3d::Identity();
+        tic[i] = Vector3d::Zero(); // translation-image ext calibration
+        ric[i] = Matrix3d::Identity(); // rotation-image ext calibration
     }
 
-    for (auto &it : all_image_frame)
+    for (auto &it : all_image_frame) // map <double, ImageFrame> --> ImageFrame: initial/initial_alignment.h
     {
-        if (it.second.pre_integration != nullptr)
+        if (it.second.pre_integration != nullptr) // 각 ImageFrame은 IntegrationBase pointer를 갖고 있음
         {
             delete it.second.pre_integration;
             it.second.pre_integration = nullptr;
@@ -86,42 +86,48 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
     if (!first_imu)
     {
         first_imu = true;
-        acc_0 = linear_acceleration;
-        gyr_0 = angular_velocity;
+        acc_0 = linear_acceleration; // global var
+        gyr_0 = angular_velocity; // global var
     }
 
-    if (!pre_integrations[frame_count])
+    if (!pre_integrations[frame_count]) // frame_count 0부터 시작, pre_integrations[frame_count] == nullptr, 즉 해당 frame_count에서는 아직 pre-ingration이 되지 않았을 때 
     {
         pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
     }
-    if (frame_count != 0)
+    if (frame_count != 0) // processImage 이후 frame_count++가 된다. 
     {
-        pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity);
+        pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity); // IntegrationBase class에 push_back 함수 존재 
+        // IntegrationBase에 있는 dt_buf, acc_buf, gyr_buf에 각각 값 넣고, propagate: acc_0, gyr_0, acc_1, gyr_1의 평균 값으로 pre-integration, update Jacobian
+        // push_back을 하면서 pre-integration measurements (delta)를 갖고 있게 된다. 
         //if(solver_flag != NON_LINEAR)
             tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity);
 
+        // estimator에 있는 dt_buf, linear_acceleration_buf, angular_velocity_buf에 push_back
         dt_buf[frame_count].push_back(dt);
         linear_acceleration_buf[frame_count].push_back(linear_acceleration);
         angular_velocity_buf[frame_count].push_back(angular_velocity);
 
+        // Pre-integration이 아닌 실제로 integration을 한다. 
         int j = frame_count;         
-        Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g;
-        Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j];
-        Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix();
-        Vector3d un_acc_1 = Rs[j] * (linear_acceleration - Bas[j]) - g;
-        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
-        Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc;
+        Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g; //이전 transformation에서 acc0 를 구함 
+        Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j]; // angular velocity 값의 평균 - bias
+        Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix(); // 평균값으로 dt 만큼 움직였을 때의 transformation
+        Vector3d un_acc_1 = Rs[j] * (linear_acceleration - Bas[j]) - g; // 변화한 transformation에서의 acc1 
+        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1); // acc0와 acc1 값의 평균
+        // 평균 가속도 값으로 추정한 Pose와 velocity
+        Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc; 
         Vs[j] += dt * un_acc;
     }
     acc_0 = linear_acceleration;
     gyr_0 = angular_velocity;
 }
 
+// map<feature_id, vector<pair<camera_id, (x,y,z,u,v,vel_x,vel_y)>>>
 void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header)
 {
     ROS_DEBUG("new image coming ------------------------------------------");
     ROS_DEBUG("Adding feature points %lu", image.size());
-    if (f_manager.addFeatureCheckParallax(frame_count, image, td))
+    if (f_manager.addFeatureCheckParallax(frame_count, image, td)) // Need to see
         marginalization_flag = MARGIN_OLD;
     else
         marginalization_flag = MARGIN_SECOND_NEW;
@@ -133,42 +139,49 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     Headers[frame_count] = header;
 
     ImageFrame imageframe(image, header.stamp.toSec());
-    imageframe.pre_integration = tmp_pre_integration;
-    all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe));
-    tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
+    // 여기서 tmp_pre_integration은 IntegrationBase
+    imageframe.pre_integration = tmp_pre_integration; //IMU를 통해서 pre-integration한 delta 값을 imageFrame의 preintegration 값에 넣어준다. 
+    all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe)); // all_image_frame = map<timestamp, ImageFrame> --> ImageFrame을 축적해나간다.
+    tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]}; // tmp_pre_integration의 Base시작점을 최근 IMU에서의 acc와 gyr값, Biases들로 세팅한다.
 
     if(ESTIMATE_EXTRINSIC == 2)
     {
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
         if (frame_count != 0)
         {
-            vector<pair<Vector3d, Vector3d>> corres = f_manager.getCorresponding(frame_count - 1, frame_count);
+            /* rotation, image calibration 
+             * frame-by-frame image의 corresspondence 찾기
+             * 해당 coresspondence와 pre-integrated rotation measurements 값을 넣어 initial extrinsic을 찾는다. 
+             */
+            vector<pair<Vector3d, Vector3d>> corres = f_manager.getCorresponding(frame_count - 1, frame_count); 
             Matrix3d calib_ric;
-            if (initial_ex_rotation.CalibrationExRotation(corres, pre_integrations[frame_count]->delta_q, calib_ric))
+            if (initial_ex_rotation.CalibrationExRotation(corres, pre_integrations[frame_count]->delta_q, calib_ric)) // frame_count >= WINDOW_SIZE 조건 있음 
             {
                 ROS_WARN("initial extrinsic rotation calib success");
                 ROS_WARN_STREAM("initial extrinsic rotation: " << endl << calib_ric);
-                ric[0] = calib_ric;
+                // let's see why twice
+                ric[0] = calib_ric; 
                 RIC[0] = calib_ric;
                 ESTIMATE_EXTRINSIC = 1;
             }
         }
     }
 
-    if (solver_flag == INITIAL)
+    if (solver_flag == INITIAL) // clearState() 후에는 solver_flag is set to INITIAL
     {
         if (frame_count == WINDOW_SIZE)
         {
             bool result = false;
-            if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1)
+            // initial extrinsic calibration && 현재 들어온 Image의 시간이 initial_timestamp = 0 보다 당연히 큼
+            if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1) 
             {
-               result = initialStructure();
+               result = initialStructure(); //SfM을 돌림 --> 이 부분은 많은 공부가 필요함 
                initial_timestamp = header.stamp.toSec();
             }
             if(result)
             {
                 solver_flag = NON_LINEAR;
-                solveOdometry();
+                solveOdometry(); // optimize --> 공부 필요 
                 slideWindow();
                 f_manager.removeFailures();
                 ROS_INFO("Initialization finish!");
@@ -179,12 +192,12 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
                 
             }
             else
-                slideWindow();
+                slideWindow(); 
         }
-        else
+        else // frame_count == WINDOW SIZE 전까지는 일단 frame_count만 증가 시킴 따라서 IMU에 밖에 의지를 할 수 없음 
             frame_count++;
     }
-    else
+    else // solver_flag == NON_LINEAR 
     {
         TicToc t_solve;
         solveOdometry();
@@ -477,12 +490,15 @@ void Estimator::solveOdometry()
     if (solver_flag == NON_LINEAR)
     {
         TicToc t_tri;
-        f_manager.triangulate(Ps, tic, ric);
+        f_manager.triangulate(Ps, tic, ric); // IMU로 추정한 Position을 통해 translation extrinsic 구함
         ROS_DEBUG("triangulation costs %f", t_tri.toc());
         optimization();
     }
 }
 
+// para_Pose에 현재 estimate된 position, quaternion 기입
+// para_SpeedBias에 현재 estimate된 speed와 biases 기입
+// para_Ex_Pose에는 extrinsic calibration 기입  
 void Estimator::vector2double()
 {
     for (int i = 0; i <= WINDOW_SIZE; i++)
@@ -520,7 +536,8 @@ void Estimator::vector2double()
         para_Ex_Pose[i][6] = q.w();
     }
 
-    VectorXd dep = f_manager.getDepthVector();
+    // 각 feature에 대한 추정된 depth 기입
+    VectorXd dep = f_manager.getDepthVector(); 
     for (int i = 0; i < f_manager.getFeatureCount(); i++)
         para_Feature[i][0] = dep(i);
     if (ESTIMATE_TD)
@@ -672,7 +689,22 @@ void Estimator::optimization()
     ceres::Problem problem;
     ceres::LossFunction *loss_function;
     //loss_function = new ceres::HuberLoss(1.0);
-    loss_function = new ceres::CauchyLoss(1.0);
+    loss_function = new ceres::CauchyLoss(1.0); 
+    // residual block: p(s) = p(L2(f(x1, x2, ..., xn))), L2(f(x1, x2, ..., xn)): cost function, {x1, .., xn}: parameters 
+    // Cauchy: p(s) = log(1+s) 
+
+    // SIZE_POSE = 7 --> xyz,qx,qy,qz,qw
+    // SIZE_SPEEDBIAS = 9 --> vx, vy, vz, bas(3), bgs(3)
+    // SIZE_FEATURE = 1
+    // double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];
+    // double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];
+    // double para_Feature[NUM_OF_F][SIZE_FEATURE];
+    // double para_Ex_Pose[NUM_OF_CAM][SIZE_POSE];
+    // double para_Retrive_Pose[SIZE_POSE];
+
+    // 만약 initial extrinsic을 안다면 para_Ex_Pose[0]을 미리 세팅해도 되나?
+
+    /* parameter block 정의 */
     for (int i = 0; i < WINDOW_SIZE + 1; i++)
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
@@ -691,15 +723,21 @@ void Estimator::optimization()
         else
             ROS_DEBUG("estimate extinsic param");
     }
-    if (ESTIMATE_TD)
+    if (ESTIMATE_TD) 
     {
         problem.AddParameterBlock(para_Td[0], 1);
         //problem.SetParameterBlockConstant(para_Td[0]);
     }
 
     TicToc t_whole, t_prepare;
-    vector2double();
+    vector2double(); // 현재의 estimate 값을 problem parameter에 넣어 준다.
 
+
+    /* residual block 정의 */
+    // template <typename Ts...> 
+    // ResidualBlockId Problem::AddResidualBlock(CostFunction* cost_function, LossFunction* loss_function, double *x, Ts, ..., xs)
+    // 따라서, factor = cost_function! 
+    // Marginalization factor 공부 필요 
     if (last_marginalization_info)
     {
         // construct new marginlization_factor
@@ -708,14 +746,21 @@ void Estimator::optimization()
                                  last_marginalization_parameter_blocks);
     }
 
+    // IMU factor = ceres::SizedCostFunction<15, 7, 9, 7, 9> 
+    // 15 --> x,y,z, qx,qy,qz, vx,vy,vz, ba(3), bg(3)
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         int j = i + 1;
-        if (pre_integrations[j]->sum_dt > 10.0)
+        // sum_dt가 0.0이 되는 조건은 repropagate인데 아직 나오지 않음 repropagate를 하지 않고 IMU data에 대해 propagate하면 sum_dt는 계속 증가함 
+        // repropagate를 하는 이유: biases change significantly, then preintegration should be recomputed (computationally expensive)
+        if (pre_integrations[j]->sum_dt > 10.0) 
             continue;
-        IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]);
-        problem.AddResidualBlock(imu_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]);
+        IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]); 
+        // cost function의 Evaluate() function안에 필요한 parameters들을 argument로 넣는다. (e.g. para_Pose[i], para_Pose[j], para_SpeedBias[i], paraSpeedBias[j])
+        problem.AddResidualBlock(imu_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]); // NULL이면 squared norm
     }
+
+    // Now factor for projection 
     int f_m_cnt = 0;
     int feature_index = -1;
     for (auto &it_per_id : f_manager.feature)

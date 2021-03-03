@@ -41,6 +41,7 @@ double last_imu_t = 0;
 
 void predict(const sensor_msgs::ImuConstPtr &imu_msg)
 {
+    // UPDATE된 Imu parameter를 기반으로 prediction을 함
     double t = imu_msg->header.stamp.toSec();
     if (init_imu)
     {
@@ -63,7 +64,7 @@ void predict(const sensor_msgs::ImuConstPtr &imu_msg)
 
     Eigen::Vector3d un_acc_0 = tmp_Q * (acc_0 - tmp_Ba) - estimator.g;
 
-    Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - tmp_Bg;
+    Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - tmp_Bg; //이전 값(?)과 현재 값의 평균 - bias 
     tmp_Q = tmp_Q * Utility::deltaQ(un_gyr * dt);
 
     Eigen::Vector3d un_acc_1 = tmp_Q * (linear_acceleration - tmp_Ba) - estimator.g;
@@ -81,7 +82,8 @@ void update()
 {
     TicToc t_predict;
     latest_time = current_time;
-    tmp_P = estimator.Ps[WINDOW_SIZE];
+    // 각각의 state를 WINDOW_SIZE로 어떻게 가져온다는 것이지? estimator Ps, Rs, Vs 등이 processIMU, processImage에 의해 변경된 것이겠지?
+    tmp_P = estimator.Ps[WINDOW_SIZE]; 
     tmp_Q = estimator.Rs[WINDOW_SIZE];
     tmp_V = estimator.Vs[WINDOW_SIZE];
     tmp_Ba = estimator.Bas[WINDOW_SIZE];
@@ -90,8 +92,8 @@ void update()
     gyr_0 = estimator.gyr_0;
 
     queue<sensor_msgs::ImuConstPtr> tmp_imu_buf = imu_buf;
-    for (sensor_msgs::ImuConstPtr tmp_imu_msg; !tmp_imu_buf.empty(); tmp_imu_buf.pop())
-        predict(tmp_imu_buf.front());
+    for (sensor_msgs::ImuConstPtr tmp_imu_msg; !tmp_imu_buf.empty(); tmp_imu_buf.pop()) // Wow... 
+        predict(tmp_imu_buf.front()); // Predict된 tmp_P, tmp_V들은 어디로 가지?
 
 }
 
@@ -241,7 +243,7 @@ void process()
                     rx = imu_msg->angular_velocity.x;
                     ry = imu_msg->angular_velocity.y;
                     rz = imu_msg->angular_velocity.z;
-                    estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz)); // 이전 imu time에서 현재 imu time까지 integrate
+                    estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz)); // 이전 imu time에서 현재 imu time까지 integrate --> Ps[j], Vs[j], Rs[j] 값을 계산함
                     //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
 
                 }
@@ -264,11 +266,11 @@ void process()
                     rx = w1 * rx + w2 * imu_msg->angular_velocity.x;
                     ry = w1 * ry + w2 * imu_msg->angular_velocity.y;
                     rz = w1 * rz + w2 * imu_msg->angular_velocity.z;
-                    estimator.processIMU(dt_1, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
+                    estimator.processIMU(dt_1, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz)); // dt_1까지 integrate함 
                     //printf("dimu: dt:%f a: %f %f %f w: %f %f %f\n",dt_1, dx, dy, dz, rx, ry, rz);
                 }
             }
-            // set relocalization frame
+            // set relocalization frame (?)
             sensor_msgs::PointCloudConstPtr relo_msg = NULL; // frame-by-frame 분석에 의해 변경된 3D points 위치 (?)
             while (!relo_buf.empty())
             {
@@ -294,33 +296,38 @@ void process()
                 int frame_index;
                 frame_index = relo_msg->channels[0].values[7];
                 estimator.setReloFrame(frame_stamp, frame_index, match_points, relo_t, relo_r);
-                // 해당 relocated points가 관측된 camera pose 정보와 frame index 정보를 estimator에 넘긴다 (?) --> setReloFrame이 무엇을 하는 건지는 아직 모
+                // relocation의 처음 camera pose를 relo frame으로 설정한다.
             }
 
             ROS_DEBUG("processing vision data with stamp %f \n", img_msg->header.stamp.toSec());
 
             TicToc t_s;
             map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> image;
-            for (unsigned int i = 0; i < img_msg->points.size(); i++)
+            for (unsigned int i = 0; i < img_msg->points.size(); i++) // image 3D feature point를 iterate
             {
-                int v = img_msg->channels[0].values[i] + 0.5;
+                int v = img_msg->channels[0].values[i] + 0.5; // ?
                 int feature_id = v / NUM_OF_CAM;
                 int camera_id = v % NUM_OF_CAM;
-                double x = img_msg->points[i].x;
+                double x = img_msg->points[i].x; // in film coordinate
                 double y = img_msg->points[i].y;
                 double z = img_msg->points[i].z;
-                double p_u = img_msg->channels[1].values[i];
-                double p_v = img_msg->channels[2].values[i];
-                double velocity_x = img_msg->channels[3].values[i];
+                double p_u = img_msg->channels[1].values[i]; // 3d feature point가 해당하는 2d image coordinate
+                double p_v = img_msg->channels[2].values[i]; 
+                double velocity_x = img_msg->channels[3].values[i]; // 3d feature point의 속도
                 double velocity_y = img_msg->channels[4].values[i];
                 ROS_ASSERT(z == 1);
                 Eigen::Matrix<double, 7, 1> xyz_uv_velocity;
                 xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y;
-                image[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
+                image[feature_id].emplace_back(camera_id,  xyz_uv_velocity); 
+                // 해당 feature에 해당하는 id를 가진 element에 (camera_id, feature point info)를 넣는다.
             }
             estimator.processImage(image, img_msg->header);
+            /* processImage --> Actual optimization happens here
+             *
+             *
+            **/
 
-            double whole_t = t_s.toc();
+            double whole_t = t_s.toc(); // t_s 만들어진 시간부터 toc 시간까지의 duration
             printStatistics(estimator, whole_t);
             std_msgs::Header header = img_msg->header;
             header.frame_id = "world";
@@ -331,15 +338,16 @@ void process()
             pubPointCloud(estimator, header);
             pubTF(estimator, header);
             pubKeyframe(estimator);
+            // processIMU, processImage에 의해 변경된 estimator의 camera pose, feature point 등을 publish함
             if (relo_msg != NULL)
-                pubRelocalization(estimator);
+                pubRelocalization(estimator); // relocation된 정보 publish... --> 더 공부 필요 
             //ROS_ERROR("end: %f, at %f", img_msg->header.stamp.toSec(), ros::Time::now().toSec());
         }
         m_estimator.unlock();
         m_buf.lock();
         m_state.lock();
         if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR)
-            update();
+            update(); // update --> 
         m_state.unlock();
         m_buf.unlock();
     }

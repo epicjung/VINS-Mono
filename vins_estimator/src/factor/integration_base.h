@@ -51,6 +51,7 @@ class IntegrationBase
             propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
     }
 
+    // Integration을 하면서 Jacobian을 업데이트 한다.
     void midPointIntegration(double _dt, 
                             const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                             const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -63,12 +64,33 @@ class IntegrationBase
         Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
         Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
         result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2, un_gyr(2) * _dt / 2);
+        // delta_q(k+1) = delta_q(k) * Exp((gyro(k) - bias) * dt) 
         Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
         Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
         result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
+        // delta_p(k+1) = delta_p(k) + delta_v(k)*dt + 0.5 * delta_q(k)(a(k) - bias)*dt^2
         result_delta_v = delta_v + un_acc * _dt;
+        // delta_v(k+1) = delta_v(k) + delta_q(k)(a(k)-bias)*dt
         result_linearized_ba = linearized_ba;
         result_linearized_bg = linearized_bg;         
+
+        /* jacobian
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        */
 
         if(update_jacobian)
         {
@@ -80,12 +102,50 @@ class IntegrationBase
             R_w_x<<0, -w_x(2), w_x(1),
                 w_x(2), 0, -w_x(0),
                 -w_x(1), w_x(0), 0;
+
+            /* Rw
+            [0      -avel_z     avel_y]
+            [avel_z     0      -avel_x]
+            [-avel_y avel_x         0 ]
+            */
+
             R_a_0_x<<0, -a_0_x(2), a_0_x(1),
                 a_0_x(2), 0, -a_0_x(0),
                 -a_0_x(1), a_0_x(0), 0;
+
+            /* Ra0
+            [0      -acc0_z     acc0_y]
+            [acc0_z     0      -acc0_x]
+            [-acc0_y  acc0_x        0 ]
+            */
+
             R_a_1_x<<0, -a_1_x(2), a_1_x(1),
                 a_1_x(2), 0, -a_1_x(0),
                 -a_1_x(1), a_1_x(0), 0;
+
+            /* Ra1
+            [0      -acc1_z     acc1_y]
+            [acc1_z     0      -acc1_x]
+            [-acc1_y  acc1_x        0 ]
+            */
+
+            /* F
+            [1 0 0 x x x x x x x x x x x x]
+            [0 1 0 x x x x x x x x x x x x]
+            [0 0 1 x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            [x x x x x x x x x x x x x x x]
+            */
 
             MatrixXd F = MatrixXd::Zero(15, 15);
             F.block<3, 3>(0, 0) = Matrix3d::Identity();
@@ -145,30 +205,56 @@ class IntegrationBase
 
         //checkJacobian(_dt, acc_0, gyr_0, acc_1, gyr_1, delta_p, delta_q, delta_v,
         //                    linearized_ba, linearized_bg);
-        delta_p = result_delta_p;
+        // delta 값을 저장
+        delta_p = result_delta_p; 
         delta_q = result_delta_q;
         delta_v = result_delta_v;
+        // bias update를 위한 linearized ba, bg 계산
         linearized_ba = result_linearized_ba;
         linearized_bg = result_linearized_bg;
         delta_q.normalize();
         sum_dt += dt;
         acc_0 = acc_1;
-        gyr_0 = gyr_1;  
-     
+        gyr_0 = gyr_1;
+        // prev = current로 변경   
     }
 
     Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
                                           const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
     {
+        // O_P = 0,
+        // O_R = 3,
+        // O_V = 6,
+        // O_BA = 9,
+        // O_BG = 12
+        // jacobian{Eigen::Matrix<double, 15, 15>::Identity()}
         Eigen::Matrix<double, 15, 1> residuals;
 
-        Eigen::Matrix3d dp_dba = jacobian.block<3, 3>(O_P, O_BA);
-        Eigen::Matrix3d dp_dbg = jacobian.block<3, 3>(O_P, O_BG);
+        /* jacobian
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x dp_dba dp_dba dp_dba dp_dbg dp_dbg dp_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x x x x dq_dbg dq_dbg dq_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x dv_dba dv_dba dv_dba dv_dbg dv_dbg dv_dbg]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        [x x x x x x x x x x x x x x x]
+        */
 
-        Eigen::Matrix3d dq_dbg = jacobian.block<3, 3>(O_R, O_BG);
+        Eigen::Matrix3d dp_dba = jacobian.block<3, 3>(O_P, O_BA); // (0, 9)
+        Eigen::Matrix3d dp_dbg = jacobian.block<3, 3>(O_P, O_BG); // (0, 12)
 
-        Eigen::Matrix3d dv_dba = jacobian.block<3, 3>(O_V, O_BA);
-        Eigen::Matrix3d dv_dbg = jacobian.block<3, 3>(O_V, O_BG);
+        Eigen::Matrix3d dq_dbg = jacobian.block<3, 3>(O_R, O_BG); // (3, 12)
+
+        Eigen::Matrix3d dv_dba = jacobian.block<3, 3>(O_V, O_BA); // (6, 9)
+        Eigen::Matrix3d dv_dbg = jacobian.block<3, 3>(O_V, O_BG); // (6,12)
 
         Eigen::Vector3d dba = Bai - linearized_ba;
         Eigen::Vector3d dbg = Bgi - linearized_bg;

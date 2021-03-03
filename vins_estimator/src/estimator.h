@@ -71,10 +71,10 @@ class Estimator
     Matrix3d ric[NUM_OF_CAM];
     Vector3d tic[NUM_OF_CAM];
 
-    Vector3d Ps[(WINDOW_SIZE + 1)];
-    Vector3d Vs[(WINDOW_SIZE + 1)];
-    Matrix3d Rs[(WINDOW_SIZE + 1)];
-    Vector3d Bas[(WINDOW_SIZE + 1)];
+    Vector3d Ps[(WINDOW_SIZE + 1)]; // IMU position
+    Vector3d Vs[(WINDOW_SIZE + 1)]; // IMU velocities
+    Matrix3d Rs[(WINDOW_SIZE + 1)]; // IMU transformation
+    Vector3d Bas[(WINDOW_SIZE + 1)]; 
     Vector3d Bgs[(WINDOW_SIZE + 1)];
     double td;
 
@@ -113,6 +113,8 @@ class Estimator
     double para_Retrive_Pose[SIZE_POSE];
     double para_Td[1][1];
     double para_Tr[1][1];
+
+    // TD = TR x IW (image_width)
 
     int loop_window_index;
 
