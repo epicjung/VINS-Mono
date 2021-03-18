@@ -22,6 +22,7 @@
 #include <queue>
 #include <opencv2/core/eigen.hpp>
 
+#include "tf_conversions/tf_eigen.h"
 
 class Estimator
 {
@@ -70,6 +71,8 @@ class Estimator
 
     Matrix3d ric[NUM_OF_CAM];
     Vector3d tic[NUM_OF_CAM];
+
+    Matrix3d imu_initial; // init orientation
 
     Vector3d Ps[(WINDOW_SIZE + 1)]; // IMU position
     Vector3d Vs[(WINDOW_SIZE + 1)]; // IMU velocities

@@ -26,6 +26,7 @@ void registerPub(ros::NodeHandle &n)
     pub_path = n.advertise<nav_msgs::Path>("path", 1000);
     pub_relo_path = n.advertise<nav_msgs::Path>("relocalization_path", 1000);
     pub_odometry = n.advertise<nav_msgs::Odometry>("odometry", 1000);
+    // pub_odometry = n.advertise<nav_msgs::Odometry>("odometry/imu_incremental", 1000);
     pub_point_cloud = n.advertise<sensor_msgs::PointCloud>("point_cloud", 1000);
     pub_margin_cloud = n.advertise<sensor_msgs::PointCloud>("history_cloud", 1000);
     pub_key_poses = n.advertise<visualization_msgs::Marker>("key_poses", 1000);
@@ -66,7 +67,7 @@ void printStatistics(const Estimator &estimator, double t)
 {
     if (estimator.solver_flag != Estimator::SolverFlag::NON_LINEAR)
         return;
-    printf("position: %f, %f, %f\r", estimator.Ps[WINDOW_SIZE].x(), estimator.Ps[WINDOW_SIZE].y(), estimator.Ps[WINDOW_SIZE].z());
+    printf("position: %f, %f, %f\n", estimator.Ps[WINDOW_SIZE].x(), estimator.Ps[WINDOW_SIZE].y(), estimator.Ps[WINDOW_SIZE].z());
     ROS_DEBUG_STREAM("position: " << estimator.Ps[WINDOW_SIZE].transpose());
     ROS_DEBUG_STREAM("orientation: " << estimator.Vs[WINDOW_SIZE].transpose());
     for (int i = 0; i < NUM_OF_CAM; i++)
@@ -112,6 +113,33 @@ void pubOdometry(const Estimator &estimator, const std_msgs::Header &header)
         odometry.header.frame_id = "world";
         odometry.child_frame_id = "world";
         Quaterniond tmp_Q;
+        
+        // // euigon
+        // Matrix3d cam_ori = estimator.imu_initial * estimator.ric[0];
+        // Vector3d cam_pos = estimator.tic[0];
+        // // cam_pos.setZero();                              
+        // Matrix3d Rs = cam_ori.inverse() * estimator.Rs[WINDOW_SIZE];
+        // Vector3d Ps = estimator.Ps[WINDOW_SIZE] - cam_pos;
+        // printf("Frame #%d:\n", estimator.frame_count);
+        // std::cout << "init: " << std::endl << estimator.imu_initial << std::endl;
+        // std::cout << "ric: " << std::endl << estimator.ric[0] << std::endl;
+        // std::cout << "ori: " << std::endl << cam_ori << std::endl;
+        // std::cout << "pos: " << std::endl << cam_pos << std::endl;
+        // std::cout << "rot:" << std::endl << Rs << std::endl;         
+        // std::cout << "trans:" << std::endl << Ps << std::endl;         
+
+        // tmp_Q = Quaterniond(Rs);
+        // odometry.pose.pose.position.x = Ps.x();
+        // odometry.pose.pose.position.y = Ps.y();
+        // odometry.pose.pose.position.z = Ps.z();
+        // odometry.pose.pose.orientation.x = tmp_Q.x();
+        // odometry.pose.pose.orientation.y = tmp_Q.y();
+        // odometry.pose.pose.orientation.z = tmp_Q.z();
+        // odometry.pose.pose.orientation.w = tmp_Q.w();
+        // odometry.twist.twist.linear.x = estimator.Vs[WINDOW_SIZE].x();
+        // odometry.twist.twist.linear.y = estimator.Vs[WINDOW_SIZE].y();
+        // odometry.twist.twist.linear.z = estimator.Vs[WINDOW_SIZE].z();
+
         tmp_Q = Quaterniond(estimator.Rs[WINDOW_SIZE]);
         odometry.pose.pose.position.x = estimator.Ps[WINDOW_SIZE].x();
         odometry.pose.pose.position.y = estimator.Ps[WINDOW_SIZE].y();
@@ -123,6 +151,7 @@ void pubOdometry(const Estimator &estimator, const std_msgs::Header &header)
         odometry.twist.twist.linear.x = estimator.Vs[WINDOW_SIZE].x();
         odometry.twist.twist.linear.y = estimator.Vs[WINDOW_SIZE].y();
         odometry.twist.twist.linear.z = estimator.Vs[WINDOW_SIZE].z();
+
         pub_odometry.publish(odometry);
 
         geometry_msgs::PoseStamped pose_stamped;
@@ -170,6 +199,10 @@ void pubOdometry(const Estimator &estimator, const std_msgs::Header &header)
               << estimator.Vs[WINDOW_SIZE].y() << ","
               << estimator.Vs[WINDOW_SIZE].z() << "," << endl;
         foutC.close();
+    }
+    else
+    {
+        ROS_WARN("solver flag is initial");
     }
 }
 

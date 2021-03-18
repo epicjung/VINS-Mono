@@ -199,6 +199,10 @@ VectorXd FeatureManager::getDepthVector()
     return dep_vec;
 }
 
+// 모든 feature 들을 iterate 함
+// 해당 feature가 나타는 frame 개수와 startFrame에 따라 Triangulate를 실시함
+// 해당 feature에 대한 depth 추정을 하는 것이 목표
+// - feature의 startFrame을 imu i로, 이전 frame을 imu_j = imu - 1
 void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
 {
     for (auto &it_per_id : feature)
@@ -215,12 +219,14 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
         Eigen::MatrixXd svd_A(2 * it_per_id.feature_per_frame.size(), 4);
         int svd_idx = 0;
 
+        // imu_i에서의 camera pose
         Eigen::Matrix<double, 3, 4> P0;
-        Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
-        Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
+        Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0]; 
+        Eigen::Matrix3d R0 = Rs[imu_i] * ric[0]; 
         P0.leftCols<3>() = Eigen::Matrix3d::Identity();
         P0.rightCols<1>() = Eigen::Vector3d::Zero();
 
+        // 해당 feature가 나타나는 frame들 iterate
         for (auto &it_per_frame : it_per_id.feature_per_frame)
         {
             imu_j++;
@@ -236,7 +242,7 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
             svd_A.row(svd_idx++) = f[0] * P.row(2) - f[2] * P.row(0);
             svd_A.row(svd_idx++) = f[1] * P.row(2) - f[2] * P.row(1);
 
-            if (imu_i == imu_j)
+            if (imu_i == imu_j) // ???
                 continue;
         }
         ROS_ASSERT(svd_idx == svd_A.rows());

@@ -1,4 +1,4 @@
-a#include <stdio.h>
+#include <stdio.h>
 #include <queue>
 #include <map>
 #include <thread>
@@ -104,7 +104,8 @@ getMeasurements()
 
     while (true)
     {
-        if (imu_buf.empty() || feature_buf.empty())
+        // 현재 들어온 feature_buf와 그 feature들 사이의 IMU들을 다 MEASUREMENTS에 넣었다면 return
+        if (imu_buf.empty() || feature_buf.empty()) 
             return measurements;
 
         if (!(imu_buf.back()->header.stamp.toSec() > feature_buf.front()->header.stamp.toSec() + estimator.td))
@@ -124,6 +125,8 @@ getMeasurements()
         feature_buf.pop();
 
         std::vector<sensor_msgs::ImuConstPtr> IMUs;
+
+        // feature 들어온 시간보다 이전에 들어온 애들 다 IMUs에 넣기 
         while (imu_buf.front()->header.stamp.toSec() < img_msg->header.stamp.toSec() + estimator.td)
         {
             IMUs.emplace_back(imu_buf.front());
@@ -132,6 +135,8 @@ getMeasurements()
         IMUs.emplace_back(imu_buf.front());
         if (IMUs.empty())
             ROS_WARN("no imu between two image");
+
+        // measurement에 img_msg보다 먼저 들어온 Imu값들과 img_msg를 넣는다. 
         measurements.emplace_back(IMUs, img_msg);
     }
     return measurements;
@@ -152,9 +157,20 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     con.notify_one();
 
     last_imu_t = imu_msg->header.stamp.toSec();
-
+    static bool init_ori = false;
     {
         std::lock_guard<std::mutex> lg(m_state);
+
+        if (!init_ori)
+        {
+            tf::Quaternion orientation;
+            Matrix3d rot_mat;
+            tf::quaternionMsgToTF(imu_msg->orientation, orientation);
+            tf::matrixTFToEigen(tf::Matrix3x3(orientation), rot_mat);
+            estimator.imu_initial = rot_mat;
+            init_ori = true;
+        }
+
         predict(imu_msg);
         std_msgs::Header header = imu_msg->header;
         header.frame_id = "world";
@@ -226,7 +242,8 @@ void process()
         {
             auto img_msg = measurement.second; // feature points
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
-            for (auto &imu_msg : measurement.first)
+
+            for (auto &imu_msg : measurement.first) // measurement.first = vector of IMU measurements
             {
                 double t = imu_msg->header.stamp.toSec();
                 double img_t = img_msg->header.stamp.toSec() + estimator.td; // image time + time offset 
@@ -247,8 +264,11 @@ void process()
                     //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
 
                 }
-                else // imu time이 image time보다 최근
+                else // imu time이 image time보다 최근 (e.g. image_time와 image_time + estimate_td사이의 imu들)
                 {
+                    // 즉, [imu_prev(current_time), img_curr, imu_curr] 이런 상황에 대한 대처 
+                    // 그 사이의 time 비율로 w1, w2 정함; w1는 img_curr이 imu_curr에 가까울수록 작고, w2는 커진다.
+                    // 이전 imu에서의 raw measurement와 현재 raw measurements 값에 대해 linear interpolation한다. 
                     double dt_1 = img_t - current_time; // 현재 img time - 이전 imu time
                     double dt_2 = t - img_t; // 현재 imu time - 현재 img time
                     current_time = img_t; // 현재 time을 Img time으로 설정
@@ -257,9 +277,6 @@ void process()
                     ROS_ASSERT(dt_1 + dt_2 > 0);
                     double w1 = dt_2 / (dt_1 + dt_2); 
                     double w2 = dt_1 / (dt_1 + dt_2);
-                    // 즉, [imu_prev, img_curr, imu_curr] 이런 식으로 데이터가 들어와야 함 
-                    // 그 사이의 time 비율로 w1, w2 정함; w1는 img_curr이 imu_curr에 가까울수록 작고, w2는 커진다.
-                    // 이전 imu에서의 raw measurement와 현재 raw measurements 값에 대해 linear interpolation한다. 
                     dx = w1 * dx + w2 * imu_msg->linear_acceleration.x; 
                     dy = w1 * dy + w2 * imu_msg->linear_acceleration.y;
                     dz = w1 * dz + w2 * imu_msg->linear_acceleration.z;
@@ -269,7 +286,16 @@ void process()
                     estimator.processIMU(dt_1, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz)); // dt_1까지 integrate함 
                     //printf("dimu: dt:%f a: %f %f %f w: %f %f %f\n",dt_1, dx, dy, dz, rx, ry, rz);
                 }
-            }
+            } 
+            // end of processing all the imu measurements
+            // estimator가 보유한 것:
+            // preintegrations[frame_count]에 해당 imu measurements를 preintegrate 했을 때의 delta 값들을 갖고 있음
+            // Preintegrations[frame_count]는 각각 dt_buf, acc_buf, gyro_buf를 갖고 있어서 repropagate할 때 쓰인다. 
+            // Ps[frame_count], Rs[frame_count], Vs[frame_count] pose 갖고 있음
+            // tmpPreintegration = preintegrations[frame_count] (?) --> 갖고 있는 이유가 혹시 preintegrations[frame_count]가 바뀔 수 있어서?
+            // dt_buf[frame_count], acc_buf[frame_count], gyro_buf[frame_count]를 자체적으로 갖고 있고 sliding window에 쓰인다.
+            // 즉 특정 ImageFrame에서의 delta값들과 integration 했을 시의 Pose를 갖고 있다.
+
             // set relocalization frame (?)
             sensor_msgs::PointCloudConstPtr relo_msg = NULL; // frame-by-frame 분석에 의해 변경된 3D points 위치 (?)
             while (!relo_buf.empty())
@@ -322,10 +348,6 @@ void process()
                 // 해당 feature에 해당하는 id를 가진 element에 (camera_id, feature point info)를 넣는다.
             }
             estimator.processImage(image, img_msg->header);
-            /* processImage --> Actual optimization happens here
-             *
-             *
-            **/
 
             double whole_t = t_s.toc(); // t_s 만들어진 시간부터 toc 시간까지의 duration
             printStatistics(estimator, whole_t);

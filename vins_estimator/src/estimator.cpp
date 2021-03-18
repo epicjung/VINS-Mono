@@ -102,13 +102,13 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
         //if(solver_flag != NON_LINEAR)
             tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity);
 
-        // estimator에 있는 dt_buf, linear_acceleration_buf, angular_velocity_buf에 push_back
+        // Estimator class에 있는 (not preintegration) dt_buf, linear_acceleration_buf, angular_velocity_buf에 push_back
         dt_buf[frame_count].push_back(dt);
         linear_acceleration_buf[frame_count].push_back(linear_acceleration);
         angular_velocity_buf[frame_count].push_back(angular_velocity);
 
         // Pre-integration이 아닌 실제로 integration을 한다. 
-        int j = frame_count;         
+        int j = frame_count;
         Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g; //이전 transformation에서 acc0 를 구함 
         Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j]; // angular velocity 값의 평균 - bias
         Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix(); // 평균값으로 dt 만큼 움직였을 때의 transformation
@@ -144,7 +144,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe)); // all_image_frame = map<timestamp, ImageFrame> --> ImageFrame을 축적해나간다.
     tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]}; // tmp_pre_integration의 Base시작점을 최근 IMU에서의 acc와 gyr값, Biases들로 세팅한다.
 
-    if(ESTIMATE_EXTRINSIC == 2)
+    if(ESTIMATE_EXTRINSIC == 2) // No prior
     {
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
         if (frame_count != 0)
@@ -172,7 +172,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         if (frame_count == WINDOW_SIZE)
         {
             bool result = false;
-            // initial extrinsic calibration && 현재 들어온 Image의 시간이 initial_timestamp = 0 보다 당연히 큼
+            // prior extrinsic calibration exists && 현재 들어온 Image의 시간이 initial_timestamp = 0 보다 당연히 큼
             if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1) 
             {
                result = initialStructure(); //SfM을 돌림 --> 이 부분은 많은 공부가 필요함 
@@ -255,7 +255,7 @@ bool Estimator::initialStructure()
         //ROS_WARN("IMU variation %f!", var);
         if(var < 0.25)
         {
-            ROS_INFO("IMU excitation not enouth!");
+            ROS_INFO("IMU excitation not enough!");
             //return false;
         }
     }
@@ -407,15 +407,20 @@ bool Estimator::visualInitialAlign()
         TIC_TMP[i].setZero();
     ric[0] = RIC[0];
     f_manager.setRic(ric);
-    f_manager.triangulate(Ps, &(TIC_TMP[0]), &(RIC[0]));
+    f_manager.triangulate(Ps, &(TIC_TMP[0]), &(RIC[0])); // calculate depth for each feature
 
     double s = (x.tail<1>())(0);
+
+    // repropagate to global pre_integrations
     for (int i = 0; i <= WINDOW_SIZE; i++)
     {
         pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
     }
+
+    // scale transformation
     for (int i = frame_count; i >= 0; i--)
         Ps[i] = s * Ps[i] - Rs[i] * TIC[0] - (s * Ps[0] - Rs[0] * TIC[0]);
+    
     int kv = -1;
     map<double, ImageFrame>::iterator frame_i;
     for (frame_i = all_image_frame.begin(); frame_i != all_image_frame.end(); frame_i++)
@@ -423,7 +428,7 @@ bool Estimator::visualInitialAlign()
         if(frame_i->second.is_key_frame)
         {
             kv++;
-            Vs[kv] = frame_i->second.R * x.segment<3>(kv * 3);
+            Vs[kv] = frame_i->second.R * x.segment<3>(kv * 3); // x에 velocity에 관련된 값 있는듯?
         }
     }
     for (auto &it_per_id : f_manager.feature)
@@ -431,7 +436,7 @@ bool Estimator::visualInitialAlign()
         it_per_id.used_num = it_per_id.feature_per_frame.size();
         if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
             continue;
-        it_per_id.estimated_depth *= s;
+        it_per_id.estimated_depth *= s; // depth를 scale로 보정
     }
 
     Matrix3d R0 = Utility::g2R(g);
@@ -440,14 +445,14 @@ bool Estimator::visualInitialAlign()
     g = R0 * g;
     //Matrix3d rot_diff = R0 * Rs[0].transpose();
     Matrix3d rot_diff = R0;
-    for (int i = 0; i <= frame_count; i++)
+    for (int i = 0; i <= frame_count; i++) // G 값에 따른 변화 보정 
     {
         Ps[i] = rot_diff * Ps[i];
         Rs[i] = rot_diff * Rs[i];
         Vs[i] = rot_diff * Vs[i];
-    }
-    ROS_DEBUG_STREAM("g0     " << g.transpose());
-    ROS_DEBUG_STREAM("my R0  " << Utility::R2ypr(Rs[0]).transpose()); 
+    } 
+    ROS_WARN_STREAM("g0     " << g.transpose());
+    ROS_WARN_STREAM("my R0  " << Utility::R2ypr(Rs[0]).transpose()); 
 
     return true;
 }
@@ -490,7 +495,7 @@ void Estimator::solveOdometry()
     if (solver_flag == NON_LINEAR)
     {
         TicToc t_tri;
-        f_manager.triangulate(Ps, tic, ric); // IMU로 추정한 Position을 통해 translation extrinsic 구함
+        f_manager.triangulate(Ps, tic, ric); 
         ROS_DEBUG("triangulation costs %f", t_tri.toc());
         optimization();
     }
